@@ -1,0 +1,58 @@
+name: Claude API Call
+
+on:
+  workflow_dispatch:   # شغّله يدوي من تبويب Actions على GitHub
+  # push:
+  #   branches: [main]  # لو عايزه يشتغل تلقائي مع كل push، شيل الكومنت من السطرين دول
+
+permissions:
+  id-token: write   # ضروري عشان GitHub يقدر يطلع OIDC token
+  contents: read
+
+jobs:
+  call-claude:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Get GitHub OIDC token (JWT)
+        id: oidc
+        run: |
+          JWT=$(curl -sSL -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=https://api.anthropic.com" | jq -r '.value')
+          echo "::add-mask::$JWT"
+          echo "jwt=$JWT" >> "$GITHUB_OUTPUT"
+
+      - name: Exchange JWT for Anthropic access token
+        id: anthropic_auth
+        run: |
+          RESPONSE=$(curl -sSL -X POST "https://api.anthropic.com/v1/oauth/token" \
+            -H "Content-Type: application/json" \
+            -d '{
+              "grant_type": "urn:ietf:params:oauth:grant-type:jwt-bearer",
+              "assertion": "'"${{ steps.oidc.outputs.jwt }}"'",
+              "federation_rule_id": "fdrl_01P8wY1n8Sg5PhcLDfkcbg6K",
+              "organization_id": "d0921ea6-e76d-4705-93c4-97d3e394220c",
+              "service_account_id": "svac_01XmyYXRKZbbRyfNfF2ukgzG"
+            }')
+          ACCESS_TOKEN=$(echo "$RESPONSE" | jq -r '.access_token')
+          if [ "$ACCESS_TOKEN" = "null" ] || [ -z "$ACCESS_TOKEN" ]; then
+            echo "فشل تبادل التوكن. الرد من Anthropic:"
+            echo "$RESPONSE"
+            exit 1
+          fi
+          echo "::add-mask::$ACCESS_TOKEN"
+          echo "access_token=$ACCESS_TOKEN" >> "$GITHUB_OUTPUT"
+
+      - name: Call Claude API
+        run: |
+          curl -sSL https://api.anthropic.com/v1/messages \
+            -H "Authorization: Bearer ${{ steps.anthropic_auth.outputs.access_token }}" \
+            -H "content-type: application/json" \
+            -H "anthropic-version: 2023-06-01" \
+            -d '{
+              "model": "claude-sonnet-4-6",
+              "max_tokens": 1000,
+              "messages": [{"role": "user", "content": "قول مرحبا بالعربي"}]
+            }'
